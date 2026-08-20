@@ -84,7 +84,9 @@ const MAX_LINK_READS = 2;
 
 const PROMPT_INTRO = `You are a consumer-protection assistant helping a user understand a webpage they're about to act on — a checkout, a signup form, a subscription page, or a terms/contract page. The page can be in any language.
 
-Write summary, key_facts, and each flag's explanation in the SAME language as the page's own text — the reader is presumably fluent in that language, since they're reading the page in it. If the page mixes languages, use whichever language dominates the actual terms/checkout content. Only fall back to English if the page's language is genuinely ambiguous. The flag "category" field must always stay exactly one of the English enum values below regardless of output language — it's an internal identifier, not shown as prose.`;
+Before writing anything else, decide ONE output language via the "language" field: whichever language dominates the actual terms/checkout content (not stray English marketing words on an otherwise non-English page — plenty of non-English sites use English loanwords like "checkout" or "premium"). Only pick English if the page's language is genuinely ambiguous or already English.
+
+That single decision then applies to EVERY text field in your response, with no exceptions: summary, key_facts, each flag's explanation, AND all 4 fields inside "ui". Do not mix languages across fields — if language is Norwegian, summary/key_facts/flags/ui must all be Norwegian, not some in Norwegian and some in English. The flag "category" field is the only exception — it must always stay exactly one of the English enum values below regardless of output language, since it's an internal identifier, not shown as prose.`;
 
 const REPORT_JOBS = `The whole point of this tool is to save the user from reading everything themselves. Be ruthless about brevity and prioritization — a short, skimmable result that surfaces what actually matters beats a thorough one that lists everything. When in doubt, leave it out.
 
@@ -96,7 +98,7 @@ You have four jobs, all required, delivered via report_findings:
 
 3. flags: AT MOST 4 flags, most important first, in these categories: auto_renewal, hidden_fees, cancellation_difficulty, refund_policy, arbitration_clause, data_sharing, other. Only flag things a reasonably careful consumer would genuinely want a heads-up about before agreeing. Skip routine, expected, or trivial details even if technically present in the text (e.g. a standard credit check, a small paper-invoice surcharge, normal shipping terms are NOT flags).
 
-4. ui: translate the 4 fixed interface labels (see the tool schema) into the SAME language as summary/key_facts/flags above, so the whole result reads as one consistent language rather than a mix of the page's language and English UI chrome.
+4. ui: translate every fixed interface label (see the tool schema) into the "language" decided above, so the whole result reads as one consistent language with zero leftover English UI chrome.
 
 Rules:
 - Only flag things actually present in the text you were given. Do not invent or assume issues that aren't stated.
@@ -139,10 +141,14 @@ const REPORT_TOOL = {
   input_schema: {
     type: "object",
     properties: {
+      language: {
+        type: "string",
+        description: "The ONE language every other text field in this response will be written in — the language that dominates the page's actual terms/checkout content (e.g. 'Norwegian', 'English', 'Spanish'). Decide this first; everything else must match it exactly.",
+      },
       overall_risk: { type: "string", enum: ["low", "medium", "high"] },
       summary: {
         type: "string",
-        description: "Exactly one short sentence (under 25 words), in the same language as the page — the single most important takeaway, not a recap.",
+        description: "Exactly one short sentence (under 25 words), in the \"language\" field's language — the single most important takeaway, not a recap.",
       },
       key_facts: {
         type: "array",
@@ -181,17 +187,47 @@ const REPORT_TOOL = {
       },
       ui: {
         type: "object",
-        description: "Translations of these 4 fixed interface labels into the SAME language you used for summary/key_facts/flags, so the whole result reads as one consistent language, not a mix. If your analysis is in English, just repeat the English text.",
+        description: "Translations of every fixed interface label into the SAME \"language\" as summary/key_facts/flags, so the whole result reads as one consistent language with zero English left over. If that language is English, just repeat the English text unchanged.",
         properties: {
-          facts_heading: { type: "string", description: "Translation of the heading: 'What this page says'" },
+          facts_heading: { type: "string", description: "Translation of: 'What this page says'" },
           no_flags_title: { type: "string", description: "Translation of: 'No red flags found'" },
           no_flags_subtitle: { type: "string", description: "Translation of: 'Nothing concerning in what we checked.'" },
           disclaimer: { type: "string", description: "Translation of: 'Informational only, not legal advice.'" },
+          also_read_label: { type: "string", description: "Translation of just the phrase: 'Also read' (prefixes a page count, e.g. 'Also read 2 linked terms pages')" },
+          could_not_open_label: { type: "string", description: "Translation of just the phrase: 'Couldn't open'" },
+          review_manually_label: { type: "string", description: "Translation of just the phrase: 'review it manually'" },
+          linked_page_singular: { type: "string", description: "Translation of: 'linked terms page' (singular, for count of 1)" },
+          linked_page_plural: { type: "string", description: "Translation of: 'linked terms pages' (plural, for count other than 1)" },
+          free_scans_left_label: { type: "string", description: "Translation of just the phrase: 'free scans left this month' (a number is prefixed before it, e.g. '3 free scans left this month')" },
+          used_up_scans_message: { type: "string", description: "Translation of the full sentence: 'You've used your 5 free scans this month.'" },
+          upgrade_button_label: { type: "string", description: "Translation of: 'Upgrade for unlimited scans'" },
+          more_issues_label: { type: "string", description: "Translation of just the phrase: 'more issues found — upgrade to see all' (a count like '+2' is prefixed before it)" },
+          checking_linked_message: { type: "string", description: "Translation of: 'Still checking linked terms for anything we missed...'" },
+          category_labels: {
+            type: "object",
+            description: "Short (1-3 word) translated display label for each of the 7 flag categories, e.g. 'auto_renewal' -> 'automatisk fornyelse' in Norwegian.",
+            properties: {
+              auto_renewal: { type: "string" },
+              hidden_fees: { type: "string" },
+              cancellation_difficulty: { type: "string" },
+              refund_policy: { type: "string" },
+              arbitration_clause: { type: "string" },
+              data_sharing: { type: "string" },
+              other: { type: "string" },
+            },
+            required: ["auto_renewal", "hidden_fees", "cancellation_difficulty", "refund_policy", "arbitration_clause", "data_sharing", "other"],
+          },
         },
-        required: ["facts_heading", "no_flags_title", "no_flags_subtitle", "disclaimer"],
+        required: [
+          "facts_heading", "no_flags_title", "no_flags_subtitle", "disclaimer",
+          "also_read_label", "could_not_open_label", "review_manually_label",
+          "linked_page_singular", "linked_page_plural", "free_scans_left_label",
+          "used_up_scans_message", "upgrade_button_label", "more_issues_label",
+          "checking_linked_message", "category_labels",
+        ],
       },
     },
-    required: ["overall_risk", "summary", "key_facts", "flags", "ui"],
+    required: ["language", "overall_risk", "summary", "key_facts", "flags", "ui"],
   },
 };
 
@@ -268,6 +304,25 @@ function normalizeResult(result) {
     no_flags_title: "No red flags found",
     no_flags_subtitle: "Nothing concerning in what we checked.",
     disclaimer: "Informational only, not legal advice.",
+    also_read_label: "Also read",
+    could_not_open_label: "Couldn't open",
+    review_manually_label: "review it manually",
+    linked_page_singular: "linked terms page",
+    linked_page_plural: "linked terms pages",
+    free_scans_left_label: "free scans left this month",
+    used_up_scans_message: "You've used your 5 free scans this month.",
+    upgrade_button_label: "Upgrade for unlimited scans",
+    more_issues_label: "more issues found — upgrade to see all",
+    checking_linked_message: "Still checking linked terms for anything we missed...",
+  };
+  const DEFAULT_CATEGORY_LABELS = {
+    auto_renewal: "auto renewal",
+    hidden_fees: "hidden fees",
+    cancellation_difficulty: "cancellation difficulty",
+    refund_policy: "refund policy",
+    arbitration_clause: "arbitration clause",
+    data_sharing: "data sharing",
+    other: "other",
   };
   const rawUi = result && typeof result.ui === "object" && result.ui ? result.ui : {};
   out.ui = { ...DEFAULT_UI_LABELS };
@@ -275,6 +330,14 @@ function normalizeResult(result) {
     const v = rawUi[key];
     if (typeof v === "string" && v.trim() && !LEAKED_FIELD_MARKERS.test(v)) {
       out.ui[key] = v.trim();
+    }
+  }
+  const rawCategoryLabels = rawUi.category_labels && typeof rawUi.category_labels === "object" ? rawUi.category_labels : {};
+  out.ui.category_labels = { ...DEFAULT_CATEGORY_LABELS };
+  for (const key of Object.keys(DEFAULT_CATEGORY_LABELS)) {
+    const v = rawCategoryLabels[key];
+    if (typeof v === "string" && v.trim() && !LEAKED_FIELD_MARKERS.test(v)) {
+      out.ui.category_labels[key] = v.trim();
     }
   }
 
