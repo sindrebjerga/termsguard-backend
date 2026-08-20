@@ -243,12 +243,26 @@ function normalizeStringList(value) {
   if (Array.isArray(value)) {
     candidates = value.filter((v) => typeof v === "string" && v.trim());
   } else if (typeof value === "string") {
-    const itemMatches = [...value.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map((m) => m[1]);
-    if (itemMatches.length) {
-      candidates = itemMatches;
+    const trimmed = value.trim();
+    let parsedArray = null;
+    if (trimmed.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) parsedArray = parsed.filter((v) => typeof v === "string");
+      } catch {
+        // not valid JSON, fall through to other parsing strategies
+      }
+    }
+    if (parsedArray) {
+      candidates = parsedArray;
     } else {
-      const lines = value.split(/\n+/).filter((s) => s.trim());
-      candidates = lines.length > 1 ? lines : [value];
+      const itemMatches = [...value.matchAll(/<item>([\s\S]*?)<\/item>/gi)].map((m) => m[1]);
+      if (itemMatches.length) {
+        candidates = itemMatches;
+      } else {
+        const lines = value.split(/\n+/).filter((s) => s.trim());
+        candidates = lines.length > 1 ? lines : [value];
+      }
     }
   } else {
     candidates = [];
@@ -269,7 +283,20 @@ function looksCorrupted(rawResult) {
     if (Array.isArray(v)) return v.some((x) => typeof x === "string" && LEAKED_FIELD_MARKERS.test(x));
     return false;
   };
-  return suspicious(rawResult?.key_facts) || suspicious(rawResult?.flags) || suspicious(rawResult?.summary);
+  const markerHit =
+    suspicious(rawResult?.key_facts) || suspicious(rawResult?.flags) || suspicious(rawResult?.summary);
+
+  // Tool-use output is schema-guided, not enforced — the model can return
+  // e.g. key_facts as a stringified "[...]" instead of a real array, or ui
+  // as a string instead of an object. Treat wrong types as corruption too,
+  // not just leaked XML markers, so it triggers the same fallback retry.
+  const wrongType =
+    (rawResult?.key_facts !== undefined && !Array.isArray(rawResult.key_facts)) ||
+    (rawResult?.flags !== undefined && !Array.isArray(rawResult.flags)) ||
+    (rawResult?.ui !== undefined &&
+      (typeof rawResult.ui !== "object" || rawResult.ui === null || Array.isArray(rawResult.ui)));
+
+  return markerHit || wrongType;
 }
 
 function normalizeResult(result) {
@@ -324,7 +351,17 @@ function normalizeResult(result) {
     data_sharing: "data sharing",
     other: "other",
   };
-  const rawUi = result && typeof result.ui === "object" && result.ui ? result.ui : {};
+  let rawUi = {};
+  if (result && typeof result.ui === "object" && result.ui && !Array.isArray(result.ui)) {
+    rawUi = result.ui;
+  } else if (typeof result?.ui === "string" && result.ui.trim().startsWith("{")) {
+    try {
+      const parsed = JSON.parse(result.ui.trim());
+      if (parsed && typeof parsed === "object") rawUi = parsed;
+    } catch {
+      // not valid JSON — fall through to English defaults below
+    }
+  }
   out.ui = { ...DEFAULT_UI_LABELS };
   for (const key of Object.keys(DEFAULT_UI_LABELS)) {
     const v = rawUi[key];
