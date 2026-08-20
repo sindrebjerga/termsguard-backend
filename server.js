@@ -88,13 +88,15 @@ Write summary, key_facts, and each flag's explanation in the SAME language as th
 
 const REPORT_JOBS = `The whole point of this tool is to save the user from reading everything themselves. Be ruthless about brevity and prioritization — a short, skimmable result that surfaces what actually matters beats a thorough one that lists everything. When in doubt, leave it out.
 
-You have three jobs, all required, delivered via report_findings:
+You have four jobs, all required, delivered via report_findings:
 
 1. summary: exactly ONE short, plain, non-legal sentence (under 25 words, in the page's language) giving the single most important takeaway — what kind of page this is and the headline verdict. Not a recap of the page. E.g. "This is a 12-month gym membership with an auto-renewal clause and a strict cancellation window." or "This is a straightforward pricing page with no concerning terms." This field must never be empty.
 
 2. key_facts: AT MOST 5 short bullets — only the handful of facts someone would actually want to know in 10 seconds to make the decision (cost, commitment length, what the real choices are, e.g. data tiers if that's what's being chosen). Skip minor administrative details (invoice format, support hours, routine account requirements) unless real money or commitment is involved. This is a highlight reel, not a transcript.
 
 3. flags: AT MOST 4 flags, most important first, in these categories: auto_renewal, hidden_fees, cancellation_difficulty, refund_policy, arbitration_clause, data_sharing, other. Only flag things a reasonably careful consumer would genuinely want a heads-up about before agreeing. Skip routine, expected, or trivial details even if technically present in the text (e.g. a standard credit check, a small paper-invoice surcharge, normal shipping terms are NOT flags).
+
+4. ui: translate the 4 fixed interface labels (see the tool schema) into the SAME language as summary/key_facts/flags above, so the whole result reads as one consistent language rather than a mix of the page's language and English UI chrome.
 
 Rules:
 - Only flag things actually present in the text you were given. Do not invent or assume issues that aren't stated.
@@ -177,8 +179,19 @@ const REPORT_TOOL = {
           required: ["category", "severity", "explanation"],
         },
       },
+      ui: {
+        type: "object",
+        description: "Translations of these 4 fixed interface labels into the SAME language you used for summary/key_facts/flags, so the whole result reads as one consistent language, not a mix. If your analysis is in English, just repeat the English text.",
+        properties: {
+          facts_heading: { type: "string", description: "Translation of the heading: 'What this page says'" },
+          no_flags_title: { type: "string", description: "Translation of: 'No red flags found'" },
+          no_flags_subtitle: { type: "string", description: "Translation of: 'Nothing concerning in what we checked.'" },
+          disclaimer: { type: "string", description: "Translation of: 'Informational only, not legal advice.'" },
+        },
+        required: ["facts_heading", "no_flags_title", "no_flags_subtitle", "disclaimer"],
+      },
     },
-    required: ["overall_risk", "summary", "key_facts", "flags"],
+    required: ["overall_risk", "summary", "key_facts", "flags", "ui"],
   },
 };
 
@@ -249,6 +262,21 @@ function normalizeResult(result) {
         }))
         .slice(0, 4)
     : [];
+
+  const DEFAULT_UI_LABELS = {
+    facts_heading: "What this page says",
+    no_flags_title: "No red flags found",
+    no_flags_subtitle: "Nothing concerning in what we checked.",
+    disclaimer: "Informational only, not legal advice.",
+  };
+  const rawUi = result && typeof result.ui === "object" && result.ui ? result.ui : {};
+  out.ui = { ...DEFAULT_UI_LABELS };
+  for (const key of Object.keys(DEFAULT_UI_LABELS)) {
+    const v = rawUi[key];
+    if (typeof v === "string" && v.trim() && !LEAKED_FIELD_MARKERS.test(v)) {
+      out.ui[key] = v.trim();
+    }
+  }
 
   return out;
 }
