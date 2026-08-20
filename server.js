@@ -82,27 +82,39 @@ async function fetchLinkedText(url, timeoutMs = 5000) {
 
 const MAX_LINK_READS = 2;
 
-const SYSTEM_PROMPT = `You are a consumer-protection assistant helping a user understand a webpage they're about to act on — a checkout, a signup form, a subscription page, or a terms/contract page. The page can be in any language. Always write your findings in English regardless of the page's language, except for short direct quotes.
+const PROMPT_INTRO = `You are a consumer-protection assistant helping a user understand a webpage they're about to act on — a checkout, a signup form, a subscription page, or a terms/contract page. The page can be in any language.
 
-You are given the visible page text and a list of links found on the page (link text -> URL). Some of those links may lead to the actual terms, conditions, cancellation policy, or pricing details that matter most for this page — regardless of what they're labeled. Labels vary a lot by site and language: "Terms", "Terms of Service", "Vilkår", "Avtalevilkår", "Conditions générales", "AGB", "Read more about our policies", "Angrerett", etc. Use your judgment on the link text to decide which ones are actually likely to matter here, and ignore irrelevant links (navigation, social media, unrelated articles, login, etc).
+Write summary, key_facts, and each flag's explanation in the SAME language as the page's own text — the reader is presumably fluent in that language, since they're reading the page in it. If the page mixes languages, use whichever language dominates the actual terms/checkout content. Only fall back to English if the page's language is genuinely ambiguous. The flag "category" field must always stay exactly one of the English enum values below regardless of output language — it's an internal identifier, not shown as prose.`;
 
-Use the read_link tool to fetch and read up to ${MAX_LINK_READS} of the most relevant links before finalizing your analysis, if any look relevant. It's fine to call report_findings directly with zero read_link calls if no links on the page look relevant, or if the page text alone is already a complete, self-contained agreement.
+const REPORT_JOBS = `The whole point of this tool is to save the user from reading everything themselves. Be ruthless about brevity and prioritization — a short, skimmable result that surfaces what actually matters beats a thorough one that lists everything. When in doubt, leave it out.
 
-The whole point of this tool is to save the user from reading everything themselves. Be ruthless about brevity and prioritization — a short, skimmable result that surfaces what actually matters beats a thorough one that lists everything. When in doubt, leave it out.
+You have three jobs, all required, delivered via report_findings:
 
-Once you've gathered what you need, you have three jobs, all required, delivered via report_findings:
-
-1. summary: exactly ONE short plain-English sentence (under 25 words) giving the single most important takeaway — what kind of page this is and the headline verdict. Not a recap of the page. E.g. "This is a 12-month gym membership with an auto-renewal clause and a strict cancellation window." or "This is a straightforward pricing page with no concerning terms." This field must never be empty.
+1. summary: exactly ONE short, plain, non-legal sentence (under 25 words, in the page's language) giving the single most important takeaway — what kind of page this is and the headline verdict. Not a recap of the page. E.g. "This is a 12-month gym membership with an auto-renewal clause and a strict cancellation window." or "This is a straightforward pricing page with no concerning terms." This field must never be empty.
 
 2. key_facts: AT MOST 5 short bullets — only the handful of facts someone would actually want to know in 10 seconds to make the decision (cost, commitment length, what the real choices are, e.g. data tiers if that's what's being chosen). Skip minor administrative details (invoice format, support hours, routine account requirements) unless real money or commitment is involved. This is a highlight reel, not a transcript.
 
 3. flags: AT MOST 4 flags, most important first, in these categories: auto_renewal, hidden_fees, cancellation_difficulty, refund_policy, arbitration_clause, data_sharing, other. Only flag things a reasonably careful consumer would genuinely want a heads-up about before agreeing. Skip routine, expected, or trivial details even if technically present in the text (e.g. a standard credit check, a small paper-invoice surcharge, normal shipping terms are NOT flags).
 
 Rules:
-- Only flag things actually present in the text you were given (page text and/or fetched linked pages). Do not invent or assume issues that aren't stated.
+- Only flag things actually present in the text you were given. Do not invent or assume issues that aren't stated.
 - If the page (and anything you read) is low-risk, return an empty flags array and overall_risk "low" — but summary and key_facts must still be filled in.
-- Each flag's explanation must be ONE short plain-English sentence, written for a non-lawyer.
+- Each flag's explanation must be ONE short, plain, non-legal sentence in the page's language, written for a non-lawyer.
 - Call report_findings exactly once, as your final action.`;
+
+const SYSTEM_PROMPT = `${PROMPT_INTRO}
+
+You are given the visible page text and a list of links found on the page (link text -> URL). Some of those links may lead to the actual terms, conditions, cancellation policy, or pricing details that matter most for this page — regardless of what they're labeled. Labels vary a lot by site and language: "Terms", "Terms of Service", "Vilkår", "Avtalevilkår", "Conditions générales", "AGB", "Read more about our policies", "Angrerett", etc. Use your judgment on the link text to decide which ones are actually likely to matter here, and ignore irrelevant links (navigation, social media, unrelated articles, login, etc).
+
+Use the read_link tool to fetch and read up to ${MAX_LINK_READS} of the most relevant links before finalizing your analysis, if any look relevant. It's fine to call report_findings directly with zero read_link calls if no links on the page look relevant, or if the page text alone is already a complete, self-contained agreement.
+
+${REPORT_JOBS}`;
+
+const QUICK_SYSTEM_PROMPT = `${PROMPT_INTRO}
+
+This is a FAST preliminary pass using only the visible page text — no linked pages are available to you right now. A deeper pass that also checks linked terms/policy pages will follow separately.
+
+${REPORT_JOBS}`;
 
 const READ_LINK_TOOL = {
   name: "read_link",
@@ -128,7 +140,7 @@ const REPORT_TOOL = {
       overall_risk: { type: "string", enum: ["low", "medium", "high"] },
       summary: {
         type: "string",
-        description: "Exactly one short plain-English sentence (under 25 words) — the single most important takeaway, not a recap.",
+        description: "Exactly one short sentence (under 25 words), in the same language as the page — the single most important takeaway, not a recap.",
       },
       key_facts: {
         type: "array",
@@ -247,6 +259,28 @@ function buildInitialPrompt(text, url, pageLinks) {
     ? `\n\nLinks found on this page (link text -> URL):\n${links.map((l) => `- "${l.text}" -> ${l.href}`).join("\n")}`
     : "";
   return `Page URL: ${url || "unknown"}\n\nPage text:\n${text}${linksBlock}`;
+}
+
+async function runQuickScan(text, url, model) {
+  const truncated = text.slice(0, 12000);
+  const response = await anthropic.messages.create({
+    model,
+    max_tokens: 2000,
+    system: QUICK_SYSTEM_PROMPT,
+    tools: [REPORT_TOOL],
+    tool_choice: { type: "tool", name: "report_findings" },
+    messages: [{ role: "user", content: buildInitialPrompt(truncated, url, null) }],
+  });
+
+  const toolUse = response.content.find((b) => b.type === "tool_use");
+  if (!toolUse) {
+    throw new Error("Model did not return structured findings.");
+  }
+
+  const result = normalizeResult(toolUse.input);
+  result.sources_read = [];
+  result.sources_failed = [];
+  return { result, raw: toolUse.input };
 }
 
 async function runScan(text, url, pageLinks, model) {
