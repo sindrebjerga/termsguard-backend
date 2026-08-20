@@ -362,6 +362,29 @@ app.post("/scan", async (req, res) => {
   }
 });
 
+// Fast preliminary pass: page text only, no link-following, forced single
+// turn. Used to show something on screen in ~2-3s while the full /scan
+// (which may follow links and take longer) runs in parallel. Not gated by
+// the free-tier limit — it's a preview of the real scan, not billed as one.
+app.post("/scan-quick", async (req, res) => {
+  const { text, url } = req.body || {};
+  if (!text || typeof text !== "string" || !text.trim()) {
+    return res.status(400).json({ error: "Missing page text." });
+  }
+
+  try {
+    let { result, raw } = await runQuickScan(text, url, FAST_MODEL);
+    if (looksCorrupted(raw)) {
+      ({ result } = await runQuickScan(text, url, FALLBACK_MODEL));
+    }
+    result.quick = true;
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Scan failed. Try again." });
+  }
+});
+
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
