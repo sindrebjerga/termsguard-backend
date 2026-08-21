@@ -513,6 +513,51 @@ app.post("/scan-quick", async (req, res) => {
   }
 });
 
+// Lightweight page classifier for the auto-detect banner: real judgment
+// instead of a keyword list, so it neither misses pages a keyword list
+// wouldn't catch, nor fires on pages that just happen to mention a price.
+// Deliberately tiny input/output to keep this cheap and fast — it runs on
+// every page the user visits, not just ones they choose to scan.
+const CLASSIFY_TOOL = {
+  name: "classify_page",
+  description: "Classify whether this page is a moment where the user might be about to sign up, pay for, or agree to something.",
+  input_schema: {
+    type: "object",
+    properties: {
+      risky: {
+        type: "boolean",
+        description: "True only if this page is a checkout, signup form, subscription/membership offer, pricing page with a purchase action, or a terms/contract acceptance page. False for ordinary content: articles, search results, social feeds, home pages, dashboards, documentation, etc.",
+      },
+    },
+    required: ["risky"],
+  },
+};
+
+const CLASSIFY_SYSTEM_PROMPT = `You quickly classify webpages for a browser extension that helps people avoid missing important terms before they sign up or pay for something. Be conservative: only mark a page "risky" if it's genuinely a checkout, signup, subscription/membership offer, or a page where the user is about to accept terms or pay. Do not mark ordinary content (articles, search results, social feeds, home pages, dashboards, documentation) as risky just because it mentions a product or price somewhere. Respond only by calling classify_page, exactly once.`;
+
+app.post("/classify", async (req, res) => {
+  const { text, url } = req.body || {};
+  if (!text || typeof text !== "string") {
+    return res.json({ risky: false });
+  }
+  const snippet = text.slice(0, 1500);
+  try {
+    const message = await anthropic.messages.create({
+      model: FAST_MODEL,
+      max_tokens: 50,
+      system: CLASSIFY_SYSTEM_PROMPT,
+      tools: [CLASSIFY_TOOL],
+      tool_choice: { type: "tool", name: "classify_page" },
+      messages: [{ role: "user", content: `URL: ${url || "unknown"}\n\nPage title and text snippet:\n${snippet}` }],
+    });
+    const toolUse = message.content.find((b) => b.type === "tool_use");
+    res.json({ risky: !!(toolUse && toolUse.input && toolUse.input.risky) });
+  } catch (err) {
+    console.error(err);
+    res.json({ risky: false }); // fail safe: never block browsing on an error
+  }
+});
+
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
